@@ -1,4 +1,4 @@
-// CartesianPlayground.jsx
+//CartesianPlayground.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 function clamp(n, min, max) {
