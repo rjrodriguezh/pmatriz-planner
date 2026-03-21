@@ -16,6 +16,37 @@ function truncateLabel5(label) {
   return s.slice(0, 5);
 }
 
+function rotatePointAroundCenter(px, py, cx, cy, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  const dx = px - cx;
+  const dy = py - cy;
+
+  return {
+    x: cx + dx * cos - dy * sin,
+    y: cy + dx * sin + dy * cos,
+  };
+}
+
+function rotatePolygon(points, angleDeg) {
+  if (!points || points.length === 0) return points ?? [];
+
+  const center = findInteriorPoint(points);
+
+  return points.map((p) =>
+    rotatePointAroundCenter(p.x, p.y, center.x, center.y, angleDeg)
+  );
+}
+
+function normalizeRotationDeg(value) {
+  const n = Number(value) || 0;
+  const normalized = ((n % 360) + 360) % 360;
+  return normalized;
+}
+
+
 function rectAreaFromCenter(cx, cy, w, h) {
   const halfW = w / 2;
   const halfH = h / 2;
@@ -171,12 +202,162 @@ function findInteriorPoint(poly) {
 }
 
 // helper label box coords
+
+function normalizeReferencePoints(rawPoints) {
+  return (rawPoints ?? [])
+    .filter(
+      (p) =>
+        p &&
+        typeof p.name === "string" &&
+        Number.isFinite(Number(p.x)) &&
+        Number.isFinite(Number(p.y))
+    )
+    .map((p) => ({
+      name: String(p.name).trim(),
+      x: Number(p.x),
+      y: Number(p.y),
+    }));
+}
+
+function normalizeLabel(label) {
+  return String(label ?? "").trim().toUpperCase();
+}
+
+function getNextBlueLabel(areas) {
+  const usedNums = (areas ?? [])
+    .filter((a) => a.source === "single")
+    .map((a) => {
+      const m = normalizeLabel(a.label).match(/^B(\d+)$/);
+      return m ? Number(m[1]) : null;
+    })
+    .filter((n) => Number.isFinite(n));
+
+  let next = 1;
+  while (usedNums.includes(next)) next += 1;
+  return `B${next}`;
+}
+
+
 function labelBoxForValue(value, fontSizePx, paddingX = 3, paddingY = 2) {
   const s = String(value);
   const charW = fontSizePx * 0.62;
   const w = Math.max(12, Math.ceil(s.length * charW + paddingX * 2));
   const h = Math.max(8, Math.ceil(fontSizePx + paddingY * 2));
   return { w, h, padX: paddingX, padY: paddingY };
+}
+
+
+
+
+function downloadTextFile(filename, content) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
+
+function downloadJsonFile(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
+
+/* =========================
+   LUA GENERATOR HELPERS
+   ========================= */
+function parseBoxNumber(label) {
+  const m = String(label || "").match(/\d+/);
+  return m ? Number(m[0]) : Number.POSITIVE_INFINITY;
+}
+
+function sortBoxesForLua(list) {
+  return [...(list || [])].sort((a, b) => {
+    const na = parseBoxNumber(a.label);
+    const nb = parseBoxNumber(b.label);
+    if (na !== nb) return na - nb;
+    return String(a.label).localeCompare(String(b.label));
+  });
+}
+
+function generateLuaFloor1({ boxes }) {
+  const lines = [];
+
+  lines.push("-- ####### PISO 1 (AUTO) #######");
+  lines.push(`-- total boxes: ${boxes.length}`);
+  lines.push("");
+
+  // Inicio
+  lines.push("PTP(HZ,100,-1,0)");
+  lines.push("");
+
+  boxes.forEach((b, idx) => {
+    const itemX = Math.round(b.x);
+    const itemY = Math.round(b.y);
+
+    const rotationDeg = normalizeRotationDeg(b.rotationDeg ?? 0);
+    const rz = rotationDeg === 270 ? -90 : rotationDeg;
+
+    const resultadoX = itemX - (-623);
+
+    let resultadoY = 0;
+    let refY = 200;
+    let ptpRef = "";
+
+    let itemZ = 300;
+    let itemSafeZ = 20;
+    let ptpWaitZ = 0;
+    let ptpLeftZ = 0;
+    let ptpLeftSafeZ = 0;
+
+
+    const zBase = Number(b.zBase ?? -900);
+
+    ptpWaitZ = zBase + itemZ + refY;
+    ptpLeftZ = zBase + itemZ;
+    ptpLeftSafeZ = zBase + itemZ + itemSafeZ;
+
+    if (itemY < 0) {
+      resultadoY = itemY - refY;
+      ptpRef = "PL";
+    } else {
+      resultadoY = itemY - refY;
+      ptpRef = "PR";
+    }
+
+    lines.push(`-- BOX ${idx + 1} (${b.label}) rot=${rotationDeg}°`);
+    lines.push(`-- floor=${b.floor} zBase=${zBase}`);
+    lines.push("SetAuxDO(4,0,0,0)");
+    lines.push("PTP(PickWait,100,-1,0)");
+    lines.push("PTP(PickSafe,100,-1,0)");
+    lines.push("PTP(PickPoint,100,-1,0)");
+    lines.push("SetAuxDO(4,1,0,0)");
+    lines.push("PTP(PickSafe,100,-1,0)");
+    lines.push(`--Comen: Destino Wait Z = ${ptpWaitZ}`);
+    lines.push(`--Comen: Destino Dejar Z = ${ptpLeftZ}`);
+    lines.push(`--Comen: Destino Safe Z = ${ptpLeftSafeZ}`);
+    lines.push(`--Comen: Rotacion RZ = ${rz}`);
+
+    lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpWaitZ},0,0,${rz})`);
+    lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpLeftZ},0,0,${rz})`);
+    lines.push("SetAuxDO(4,0,0,0)");
+    lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpLeftSafeZ},0,0,${rz})`);
+    lines.push("");
+  });
+
+  return lines.join("\n");
 }
 
 export default function CartesianPlayground() {
@@ -186,6 +367,38 @@ export default function CartesianPlayground() {
   // ✅ VIEWPORT responsivo (para que no corte paneles)
   const centerRef = useRef(null);
   const [viewportPx, setViewportPx] = useState(900);
+
+  const [showReferencePoints, setShowReferencePoints] = useState(true); // variable para mostrar puntos definidos por el robot
+  const referencePoints = useMemo(
+    () =>
+      normalizeReferencePoints([
+        { name: "HZ", x: -991.811, y: -177.128 },
+        { name: "Tomacaja2", x: -1463.567, y: -83.505 },
+        { name: "Tomacaja1", x: -1463.577, y: -83.493 },
+        { name: "TransR1", x: -749.996, y: 1000.005 },
+        { name: "PalletRbox1", x: 216.998, y: 634.997 },
+        { name: "PalletRbox21", x: 167.011, y: 585.010 },
+      ]),
+    []
+  );
+
+
+  const sectionGroupStyle = {
+    border: "1px solid #d1d5db",
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 12,
+    background: "#f9fafb",
+  };
+
+  const sectionGroupTitleStyle = {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#374151",
+    marginBottom: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  };
 
   useEffect(() => {
     const el = centerRef.current;
@@ -204,6 +417,8 @@ export default function CartesianPlayground() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+
 
   // Zoom + Pan (cámara)
   const [zoom, setZoom] = useState(1.0);
@@ -241,10 +456,34 @@ export default function CartesianPlayground() {
     error: "",
   });
 
+
+  // Panel add floors and Z value
+  const [floorPanelOpen, setFloorPanelOpen] = useState(false);
+  const [newFloorNumber, setNewFloorNumber] = useState(1);
+  const [newFloorZ, setNewFloorZ] = useState(-900);
+  const [newFloorColor, setNewFloorColor] = useState("#2563eb");
+  const [floorDefs, setFloorDefs] = useState([]);
+
+
+  
+  const [newFloorSelected, setNewFloorSelected] = useState(1);
+
+
+  useEffect(() => {
+    if (!floorDefs || floorDefs.length === 0) return;
+
+    const exists = floorDefs.some((f) => f.floor === newFloorSelected);
+    if (!exists) {
+      setNewFloorSelected(floorDefs[0].floor);
+    }
+  }, [floorDefs, newFloorSelected]);
+
+
+  const [referencePaintPanelOpen, setReferencePaintPanelOpen] = useState(true);
   // Workspace
   const [workspaceXmm, setWorkspaceXmm] = useState(5000);
   const [workspaceYmm, setWorkspaceYmm] = useState(5200);
-  const [workspaceOriginXmm, setWorkspaceOriginXmm] = useState(-123);
+  const [workspaceOriginXmm, setWorkspaceOriginXmm] = useState(0);
   const [workspaceOriginYmm, setWorkspaceOriginYmm] = useState(0);
 
   // Grid
@@ -260,17 +499,33 @@ export default function CartesianPlayground() {
   // Form agregar área azul
   const [newLabel, setNewLabel] = useState("B1");
   const [newXY, setNewXY] = useState("(417, -635)");
-  const [newW, setNewW] = useState(150);
-  const [newH, setNewH] = useState(300);
+  const [newW, setNewW] = useState(300);
+  const [newH, setNewH] = useState(400);
   const [addOneError, setAddOneError] = useState("");
 
   // Paint areas textarea
   const [paintEnabled, setPaintEnabled] = useState(true);
+  const [paintPanelOpen, setPaintPanelOpen] = useState(false);
+  const [blueAreasPanelOpen, setBlueAreasPanelOpen] = useState(false);
+  const [luaPanelOpen, setLuaPanelOpen] = useState(false);
+
+
+  const [addPanelOpen, setAddPanelOpen] = useState(false);
+  const [projectPanelOpen, setProjectPanelOpen] = useState(false);
+
+
+  const [blueAreasFloorFilter, setBlueAreasFloorFilter] = useState("ALL");
+
   const [paintAreasText, setPaintAreasText] = useState(
-    "Robot,(-623,-425),(-623,425),(377,425),(377,-425)\nRRight,(-623,425),(-623,1625),(577,1625),(577,425)\nRLeft,(-623,-425),(-623,-1625),(577,-1625),(577,-425)"
+    "Robot,(-623,-425),(-623,425),(377,425),(377,-425)\nRLeft,(-623,-425),(-623,-1625),(377,-1625),(377,-425),\nRRight,(-623,425),(-623,1625),(377,1625),(377,425)"
   );
   const [paintAreas, setPaintAreas] = useState(() => []);
   const [paintAreasError, setPaintAreasError] = useState("");
+
+  // ✅ NUEVO: estados LUA (Piso 1)
+  const [luaFloor1Text, setLuaFloor1Text] = useState("");
+
+  const importProjectInputRef = useRef(null);
 
   // Scale (usando viewportPx)
   const baseScale = useMemo(() => {
@@ -285,8 +540,8 @@ export default function CartesianPlayground() {
   const scale = useMemo(() => baseScale * zoom, [baseScale, zoom]);
 
   const pxDeltaToMmDelta = (dxPx, dyPx) => ({
-    dx_mm: dxPx / scale,
-    dy_mm: -dyPx / scale,
+    dx_mm: -dxPx / scale,
+    dy_mm: dyPx / scale,
   });
 
   const stopAreaDrag = () => {
@@ -308,8 +563,12 @@ export default function CartesianPlayground() {
 
   // ✅ px -> mm
   const pxToMm = (x_px, y_px) => {
-    const x_rel = (x_px - canvasCenterPx.x) / scale;
-    const y_rel = (canvasCenterPx.y - y_px) / scale;
+    // X invertido
+    const x_rel = (canvasCenterPx.x - x_px) / scale;
+
+    // Y invertido
+    const y_rel = (y_px - canvasCenterPx.y) / scale;
+
     return {
       x_mm: x_rel + workspaceOriginXmm,
       y_mm: y_rel + workspaceOriginYmm,
@@ -329,24 +588,29 @@ export default function CartesianPlayground() {
   }, [workspaceXmm, workspaceYmm, workspaceOriginXmm, workspaceOriginYmm]);
 
   // mm -> px
-  const mmToPx = (x_mm, y_mm) => {
-    const x_rel = x_mm - workspaceOriginXmm;
-    const y_rel = y_mm - workspaceOriginYmm;
+    const mmToPx = (x_mm, y_mm) => {
+      const x_rel = x_mm - workspaceOriginXmm;
+      const y_rel = y_mm - workspaceOriginYmm;
 
-    const x_px = canvasCenterPx.x + x_rel * scale;
-    const y_px = canvasCenterPx.y - y_rel * scale;
-    return { x_px, y_px };
-  };
+      // X invertido: izquierda +X, derecha -X
+      const x_px = canvasCenterPx.x - x_rel * scale;
+
+      // Y invertido: arriba -Y, abajo +Y
+      const y_px = canvasCenterPx.y + y_rel * scale;
+
+      return { x_px, y_px };
+    };
 
   const workspaceBorderPx = useMemo(() => {
-    const lt = mmToPx(limits.minX, limits.maxY);
-    const rb = mmToPx(limits.maxX, limits.minY);
-    return {
-      left: lt.x_px,
-      top: lt.y_px,
-      w: rb.x_px - lt.x_px,
-      h: rb.y_px - lt.y_px,
-    };
+    const p1 = mmToPx(limits.minX, limits.maxY);
+    const p2 = mmToPx(limits.maxX, limits.minY);
+
+    const left = Math.min(p1.x_px, p2.x_px);
+    const top = Math.min(p1.y_px, p2.y_px);
+    const w = Math.abs(p2.x_px - p1.x_px);
+    const h = Math.abs(p2.y_px - p1.y_px);
+
+    return { left, top, w, h };
   }, [limits.minX, limits.maxX, limits.minY, limits.maxY, mmToPx]);
 
   const gridLines = useMemo(() => {
@@ -443,10 +707,11 @@ export default function CartesianPlayground() {
   }, [showCoords, coordStepMm, viewportPx, pxToMm, mmToPx]);
 
   const axes = useMemo(() => {
-    const xA = mmToPx(limits.minX, workspaceOriginYmm);
-    const xB = mmToPx(limits.maxX, workspaceOriginYmm);
-    const yA = mmToPx(workspaceOriginXmm, limits.minY);
-    const yB = mmToPx(workspaceOriginXmm, limits.maxY);
+    const xA = mmToPx(limits.minX, 0);
+    const xB = mmToPx(limits.maxX, 0);
+    const yA = mmToPx(0, limits.minY);
+    const yB = mmToPx(0, limits.maxY);
+
     return {
       x1: xA.x_px,
       y1: xA.y_px,
@@ -463,9 +728,168 @@ export default function CartesianPlayground() {
     limits.minY,
     limits.maxY,
     mmToPx,
-    workspaceOriginXmm,
-    workspaceOriginYmm,
   ]);
+
+  const axisDirectionLabels = useMemo(() => {
+    const margin = 42; // antes 22
+    const cx = viewportPx / 2;
+    const cy = viewportPx / 2;
+
+    return {
+      top: {
+        x: cx,
+        y: margin,
+        text: "-Y",
+      },
+      bottom: {
+        x: cx,
+        y: viewportPx - margin,
+        text: "+Y",
+      },
+      left: {
+        x: margin,
+        y: cy,
+        text: "+X",
+      },
+      right: {
+        x: viewportPx - margin,
+        y: cy,
+        text: "-X",
+      },
+    };
+  }, [viewportPx]);
+
+
+  function getSuggestedFloorZBase(floorNumber) {
+    const itemZ = 300; // altura de cada piso
+    return -900 + (Math.max(1, Number(floorNumber)) - 1) * itemZ;
+  }
+
+  function saveFloorDef() {
+    const floor = Number(newFloorNumber);
+    const zBase = Number(newFloorZ);
+    const color = String(newFloorColor || "").trim();
+
+    if (!Number.isFinite(floor) || floor < 1) return;
+    if (!Number.isFinite(zBase)) return;
+    if (!color) return;
+
+    setFloorDefs((prev) => {
+      const exists = prev.some((f) => f.floor === floor);
+
+      if (exists) {
+        return prev
+          .map((f) => (f.floor === floor ? { ...f, zBase, color } : f))
+          .sort((a, b) => a.floor - b.floor);
+      }
+
+      return [...prev, { floor, zBase, color }].sort((a, b) => a.floor - b.floor);
+    });
+  }
+
+  function deleteFloorDef(floorNumber) {
+    setFloorDefs((prev) => prev.filter((f) => f.floor !== floorNumber));
+  }
+
+
+  function exportProjectToJson() {
+    const projectData = {
+      floors: floorDefs ?? [],
+      areas: (paintAreas ?? [])
+        .filter((a) => a.source === "single")
+        .map((a) => {
+          const center = areaSummaryPointMm(a);
+
+          const xs = (a.points ?? []).map((p) => p.x);
+          const ys = (a.points ?? []).map((p) => p.y);
+
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+
+          return {
+            id: a.id,
+            label: a.label,
+            x: center.x,
+            y: center.y,
+            floor: a.floor ?? 1,
+            rotationDeg: a.rotationDeg ?? 0,
+            w: Math.round(maxX - minX),
+            h: Math.round(maxY - minY),
+          };
+        }),
+    };
+
+    downloadJsonFile("proyecto_robot.json", projectData);
+  }
+
+
+
+
+  function importProjectFromFile(file) {
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = (evt) => {
+      try {
+        const rawText = String(evt.target?.result ?? "");
+        const data = JSON.parse(rawText);
+
+        const importedFloors = Array.isArray(data.floors) ? data.floors : [];
+        const importedAreas = Array.isArray(data.areas) ? data.areas : [];
+
+        const rebuiltAreas = importedAreas.map((a, idx) => {
+          const x = Number(a.x ?? 0);
+          const y = Number(a.y ?? 0);
+          const w = Math.max(1, Number(a.w ?? 300));
+          const h = Math.max(1, Number(a.h ?? 400));
+          const rotationDeg = normalizeRotationDeg(a.rotationDeg ?? 0);
+
+          let pts = rectAreaFromCenter(x, y, w, h);
+
+          if (rotationDeg !== 0) {
+            pts = rotatePolygon(pts, rotationDeg);
+          }
+
+          pts = pts.map((p) => ({
+            x: clamp(p.x, limits.minX, limits.maxX),
+            y: clamp(p.y, limits.minY, limits.maxY),
+          }));
+
+          return {
+            id:
+              a.id ||
+              globalThis.crypto?.randomUUID?.() ||
+              `imported-${idx}-${Date.now()}`,
+            label: truncateLabel5(a.label) || `B${idx + 1}`,
+            points: pts,
+            source: "single",
+            floor: Number(a.floor ?? 1),
+            rotationDeg,
+          };
+        });
+
+        setFloorDefs(importedFloors);
+        setPaintAreas(rebuiltAreas);
+        setSelectedAreaId("");
+        setNewLabel(getNextBlueLabel(rebuiltAreas));
+        setAddOneError("");
+        setPaintAreasError("");
+      } catch (err) {
+        console.error("Error importing project:", err);
+        alert("Error al cargar el archivo del proyecto.");
+      }
+    };
+
+    reader.readAsText(file);
+  }
+
+  function getFloorColor(floor) {
+    const found = floorDefs.find((f) => f.floor === floor);
+    return found?.color || "#2563eb";
+  }
 
   function areaSummaryPointMmRaw(area) {
     const poly = area?.points ?? [];
@@ -513,8 +937,36 @@ export default function CartesianPlayground() {
     };
   }, []);
 
+
+
+  function rotateArea90(areaId) {
+    setPaintAreas((prev) =>
+      prev.map((a) => {
+        if (a.id !== areaId) return a;
+        if (a.source !== "single") return a;
+
+        const rotatedPoints = rotatePolygon(a.points ?? [], 90).map((p) => ({
+          x: clamp(p.x, limits.minX, limits.maxX),
+          y: clamp(p.y, limits.minY, limits.maxY),
+        }));
+
+        return {
+          ...a,
+          points: rotatedPoints,
+          rotationDeg: normalizeRotationDeg((a.rotationDeg ?? 0) + 90),
+        };
+      })
+    );
+  }
+
+
   function deletePolygon(id) {
-    setPaintAreas((prev) => prev.filter((a) => a.id !== id));
+    setPaintAreas((prev) => {
+      const nextAreas = prev.filter((a) => a.id !== id);
+      setNewLabel(getNextBlueLabel(nextAreas));
+      return nextAreas;
+    });
+
     setSelectedAreaId((cur) => (cur === id ? "" : cur));
     setAreaMenu((m) =>
       m.areaId === id ? { ...m, open: false, areaId: "" } : m
@@ -668,7 +1120,23 @@ export default function CartesianPlayground() {
   const addOnePoint = () => {
     setAddOneError("");
 
-    const label = truncateLabel5(newLabel) || "AREA";
+    const rawLabel = truncateLabel5(newLabel) || "AREA";
+    const label = normalizeLabel(rawLabel);
+
+    if (!floorDefs || floorDefs.length === 0) {
+      setAddOneError("Debes definir al menos un piso antes de agregar un área azul.");
+      return;
+    }
+
+    const labelExists = (paintAreas ?? []).some(
+      (a) => a.source === "single" && normalizeLabel(a.label) === label
+    );
+
+    if (labelExists) {
+      setAddOneError(`El label ${label} ya existe. Usa otro.`);
+      return;
+    }
+
     const parsed = parseXY(newXY);
     if (!parsed.ok) {
       setAddOneError(`Coordenadas inválidas: ${parsed.error}`);
@@ -705,10 +1173,21 @@ export default function CartesianPlayground() {
     const newAreaId =
       globalThis.crypto?.randomUUID?.() ?? String(Date.now() + Math.random());
 
-    setPaintAreas((prev) => [
-      ...prev,
-      { id: newAreaId, label, points: pts, source: "single" },
-    ]);
+    const newArea = {
+      id: newAreaId,
+      label,
+      points: pts,
+      source: "single",
+      floor: newFloorSelected,
+      rotationDeg: 0,
+    };
+
+    setPaintAreas((prev) => {
+      const nextAreas = [...prev, newArea];
+      setNewLabel(getNextBlueLabel(nextAreas));
+      return nextAreas;
+    });
+
     setSelectedAreaId(newAreaId);
 
     const line = formatAreaCSVLine(label, pts);
@@ -781,23 +1260,16 @@ export default function CartesianPlayground() {
         if (p.y > maxY) maxY = p.y;
       }
 
-      const candidateMm = { x: minX + PAD_MM, y: maxY - PAD_MM };
-      const labelMm = pointInPolygon(candidateMm, polyMm)
-        ? candidateMm
-        : findInteriorPoint(polyMm);
-
-      const labelPx = mmToPx(labelMm.x, labelMm.y);
-
-      const topLeftMm = { x: minX + PAD_MM, y: maxY - PAD_MM };
-      const labelTopLeftPx = mmToPx(topLeftMm.x, topLeftMm.y);
-
       const centerMm = findInteriorPoint(polyMm);
-      const labelCenterPx = mmToPx(centerMm.x, centerMm.y);
+      const labelPx = mmToPx(centerMm.x, centerMm.y);
+      const labelCenterPx = labelPx;
+      const labelTopLeftPx = labelPx;
 
       return {
         id: area.id,
         label: truncateLabel5(area.label) || "AREA",
         source: area.source ?? "csv",
+        floor: area.floor ?? null,
         pointsAttr,
         labelPx,
         labelCenterPx,
@@ -810,44 +1282,95 @@ export default function CartesianPlayground() {
     });
   }, [paintEnabled, paintAreas, mmToPx]);
 
-  // ✅ NUEVO: listado de áreas azules (source === "single")
+  // ✅ listado de áreas azules (source === "single")
   const blueAreasList = useMemo(() => {
-    const list = (paintAreasSvg ?? [])
-      .filter((a) => a.source === "single")
-      .map((a) => ({
+  const list = (paintAreasSvg ?? [])
+    .filter((a) => a.source === "single")
+    .map((a) => {
+      const raw = paintAreas.find((p) => p.id === a.id);
+      return {
         id: a.id,
         label: truncateLabel5(a.label) || "AREA",
         x: a.summary.x_mm,
         y: a.summary.y_mm,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-    return list;
-  }, [paintAreasSvg]);
+        floor: raw?.floor ?? 1,
+        rotationDeg: raw?.rotationDeg ?? 0,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return list;
+}, [paintAreasSvg, paintAreas]);
+
+  
+
+
+  const filteredBlueAreasList = useMemo(() => {
+    if (blueAreasFloorFilter === "ALL") return blueAreasList;
+
+    return blueAreasList.filter(
+      (b) => String(b.floor) === String(blueAreasFloorFilter)
+    );
+  }, [blueAreasList, blueAreasFloorFilter]);
+
+
+
+  const filteredPaintAreasSvg = useMemo(() => {
+    if (blueAreasFloorFilter === "ALL") return paintAreasSvg;
+
+    return (paintAreasSvg ?? []).filter((a) => {
+      if (a.source !== "single") return true;
+      return String(a.floor) === String(blueAreasFloorFilter);
+    });
+  }, [paintAreasSvg, blueAreasFloorFilter]);
+
+  const referencePointsSvg = useMemo(() => {
+    if (!showReferencePoints) return [];
+
+    return referencePoints
+      .map((p) => {
+        const px = mmToPx(p.x, p.y);
+        return {
+          ...p,
+          x_px: px.x_px,
+          y_px: px.y_px,
+        };
+      })
+      .filter(
+        (p) =>
+          Number.isFinite(p.x_px) &&
+          Number.isFinite(p.y_px)
+      );
+  }, [showReferencePoints, referencePoints, mmToPx]);
 
   const coordBox = useMemo(() => {
     const fs = clamp(Number(coordFontPx) || 5, 4, 16);
     return { fs, ...labelBoxForValue("-9999", fs, 3, 2) };
   }, [coordFontPx]);
 
-  const blueLabelFs = clamp(18 / zoom, 12, 22);
-  const blueCoordFs = clamp(16 / zoom, 11, 20);
+
   const blueLineDy = clamp(12 / zoom, 9, 14);
 
   return (
-    <div
-      style={{
-        padding: 16,
-        display: "grid",
-        gridTemplateColumns: "240px minmax(520px, 1fr) 360px",
-        gap: 16,
-        width: "100%",
-        maxWidth: "100vw",
-        overflowX: "hidden",
-        boxSizing: "border-box",
-        alignItems: "start",
-      }}
-    >
+  <div
+    style={{
+      padding: 16,
+      display: "grid",
+      //gridTemplateColumns: "240px minmax(520px, 1fr) 360px",
+      gridTemplateColumns: "minmax(520px, 1fr) 360px",
+      gap: 16,
+      width: "100%",
+      maxWidth: "100vw",
+      overflowX: "hidden",
+      boxSizing: "border-box",
+      alignItems: "start",
+      background: "#f6f7fb",
+      color: "#1f2937",
+      fontFamily: "Inter, system-ui, Arial, sans-serif",
+      minHeight: "100vh",
+    }}
+  >
       {/* IZQUIERDA */}
+      {/*
       <div
         style={{
           border: "1px solid #ddd",
@@ -1071,27 +1594,31 @@ export default function CartesianPlayground() {
           </div>
         </div>
       </div>
+*/}
 
       {/* CENTRO */}
       <div
         ref={centerRef}
         style={{
-          border: "1px solid #ddd",
-          borderRadius: 10,
-          padding: 12,
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          minWidth: 520,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: "4px 12px",
+          overflow: "auto",
+          maxHeight: "calc(100vh - 32px)",
+          fontSize: 13,
+          position: "sticky",
+          top: 16,
+          background: "#ffffff",
+          boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
         }}
       >
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Preview</div>
+          
 
-        {/* ✅ VIEWPORT responsivo SIN SCROLL */}
-        <div
-          style={{
-            width: viewportPx,
-            height: viewportPx,
+          {/* ✅ VIEWPORT responsivo SIN SCROLL */}
+          <div
+            style={{
+              width: viewportPx,
+              height: viewportPx,
             border: "1px solid #cfcfcf",
             borderRadius: 8,
             background: "#fff",
@@ -1101,10 +1628,14 @@ export default function CartesianPlayground() {
           }}
         >
           <svg
-            ref={svgRef}
-            width={viewportPx}
-            height={viewportPx}
-            style={{ position: "absolute", left: 0, top: 0 }}
+          ref={svgRef}
+          width={viewportPx}
+          height={viewportPx}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+          }}
             onPointerDown={onPanPointerDown}
             onPointerMove={onSvgPointerMove}
             onPointerUp={onSvgPointerUp}
@@ -1124,6 +1655,9 @@ export default function CartesianPlayground() {
               strokeDasharray="6 6"
               pointerEvents="none"
             />
+
+            {/* PUNTOS REFERENCIALES */}
+            
 
             {gridLines.map((ln) => (
               <line
@@ -1156,6 +1690,97 @@ export default function CartesianPlayground() {
               strokeWidth={2}
               pointerEvents="none"
             />
+
+            {/* etiquetas dirección ejes */}
+            <g pointerEvents="none">
+              <rect
+                x={axisDirectionLabels.top.x - 22}
+                y={axisDirectionLabels.top.y - 11}
+                width={44}
+                height={22}
+                rx={4}
+                fill="rgba(255,255,255,0.88)"
+              />
+              <text
+                x={axisDirectionLabels.top.x}
+                y={axisDirectionLabels.top.y}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize="16"
+                fontFamily="monospace"
+                fontWeight="900"
+                fill="#dc2626"
+                style={{ userSelect: "none" }}
+              >
+                {axisDirectionLabels.top.text}
+              </text>
+
+              <rect
+                x={axisDirectionLabels.bottom.x - 22}
+                y={axisDirectionLabels.bottom.y - 11}
+                width={44}
+                height={22}
+                rx={4}
+                fill="rgba(255,255,255,0.88)"
+              />
+              <text
+                x={axisDirectionLabels.bottom.x}
+                y={axisDirectionLabels.bottom.y}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize="16"
+                fontFamily="monospace"
+                fontWeight="900"
+                fill="#dc2626"
+                style={{ userSelect: "none" }}
+              >
+                {axisDirectionLabels.bottom.text}
+              </text>
+
+              <rect
+                x={axisDirectionLabels.left.x - 22}
+                y={axisDirectionLabels.left.y - 11}
+                width={44}
+                height={22}
+                rx={4}
+                fill="rgba(255,255,255,0.88)"
+              />
+              <text
+                x={axisDirectionLabels.left.x}
+                y={axisDirectionLabels.left.y}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize="16"
+                fontFamily="monospace"
+                fontWeight="900"
+                fill="#dc2626"
+                style={{ userSelect: "none" }}
+              >
+                {axisDirectionLabels.left.text}
+              </text>
+
+              <rect
+                x={axisDirectionLabels.right.x - 22}
+                y={axisDirectionLabels.right.y - 11}
+                width={44}
+                height={22}
+                rx={4}
+                fill="rgba(255,255,255,0.88)"
+              />
+              <text
+                x={axisDirectionLabels.right.x}
+                y={axisDirectionLabels.right.y}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize="16"
+                fontFamily="monospace"
+                fontWeight="900"
+                fill="#dc2626"
+                style={{ userSelect: "none" }}
+              >
+                {axisDirectionLabels.right.text}
+              </text>
+            </g>
 
             {/* coords */}
             {showCoords ? (
@@ -1222,41 +1847,45 @@ export default function CartesianPlayground() {
             ) : null}
 
             {/* ÁREAS */}
-            {paintAreasSvg.map((a) => (
-              <g key={a.id}>
-                <polygon
-                  points={a.pointsAttr}
-                  fill={
-                    a.source === "single"
-                      ? "rgba(43,108,255,0.10)"
-                      : "rgba(255,140,0,0.10)"
-                  }
-                  stroke={
-                    a.id === selectedAreaId
-                      ? a.source === "single"
-                        ? "rgba(43,108,255,0.95)"
-                        : "rgba(255,140,0,0.95)"
-                      : a.source === "single"
-                      ? "rgba(43,108,255,0.70)"
-                      : "rgba(255,140,0,0.70)"
-                  }
-                  strokeWidth="2"
-                  style={{
-                    cursor: areaDragRef.current.active ? "grabbing" : "grab",
-                  }}
-                  onPointerDown={(e) => onAreaPointerDown(e, a.id)}
-                  onContextMenu={(e) => onAreaContextMenu(e, a.id)}
-                />
+            {filteredPaintAreasSvg.map((a) => {
+              const floorColor = getFloorColor(a.floor);
 
-                {/* SOLO AZUL */}
-                {a.source === "single" ? (
+              const fillColor =
+                a.source === "single"
+                  ? `${floorColor}22`
+                  : "rgba(255,140,0,0.10)";
+
+              const strokeColor =
+                a.source === "single"
+                  ? floorColor
+                  : "rgba(255,140,0,0.70)";
+
+              const selectedStrokeColor =
+                a.source === "single"
+                  ? floorColor
+                  : "rgba(255,140,0,0.95)";
+
+              return (
+                <g key={a.id}>
+                  <polygon
+                    points={a.pointsAttr}
+                    fill={fillColor}
+                    stroke={a.id === selectedAreaId ? selectedStrokeColor : strokeColor}
+                    strokeWidth="2"
+                    style={{
+                      cursor: areaDragRef.current.active ? "grabbing" : "grab",
+                    }}
+                    onPointerDown={(e) => onAreaPointerDown(e, a.id)}
+                    onContextMenu={(e) => onAreaContextMenu(e, a.id)}
+                  />
+
                   <g pointerEvents="none">
                     <text
-                      x={a.labelTopLeftPx.x_px}
-                      y={a.labelTopLeftPx.y_px}
-                      textAnchor="start"
-                      dominantBaseline="hanging"
-                      fontSize={blueLabelFs}
+                      x={a.labelCenterPx.x_px}
+                      y={a.labelCenterPx.y_px}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={a.source === "single" ? 12 : 10}
                       fontFamily="monospace"
                       fontWeight={900}
                       fill="#111"
@@ -1264,48 +1893,14 @@ export default function CartesianPlayground() {
                     >
                       {a.label}
                     </text>
-                    {/*
-                    <text
-                      x={a.labelCenterPx.x_px}
-                      y={a.labelCenterPx.y_px}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={blueCoordFs}
-                      fontFamily="monospace"
-                      fontWeight={800}
-                      fill="#111"
-                      style={{ userSelect: "none" }}
-                    >
-                      <tspan x={a.labelCenterPx.x_px} dy="0">
-                        x={a.summary.x_mm}
-                      </tspan>
-                      <tspan x={a.labelCenterPx.x_px} dy={blueLineDy}>
-                        y={a.summary.y_mm}
-                      </tspan>
-                    </text>
-                    */}
                   </g>
-                ) : (
-                  <text
-                    x={a.labelPx.x_px}
-                    y={a.labelPx.y_px}
-                    textAnchor="start"
-                    dominantBaseline="hanging"
-                    fontSize="8"
-                    fontFamily="monospace"
-                    fontWeight={700}
-                    fill="#111"
-                    style={{ userSelect: "none", pointerEvents: "none" }}
-                  >
-                    {a.label}
-                  </text>
-                )}
-              </g>
-            ))}
+                </g>
+              );
+            })}
 
             {/* ORIGIN */}
             {(() => {
-              const o = mmToPx(workspaceOriginXmm, workspaceOriginYmm);
+              const o = mmToPx(0, 0);
               return (
                 <g pointerEvents="none">
                   <circle cx={o.x_px} cy={o.y_px} r={4} fill="#ff4d4d" />
@@ -1320,81 +1915,142 @@ export default function CartesianPlayground() {
                     fill="#ff4d4d"
                     style={{ userSelect: "none" }}
                   >
-                    ORIGIN
+                    ORIGIN (0,0)
                   </text>
                 </g>
               );
             })()}
           </svg>
+
+            {showReferencePoints &&
+              referencePointsSvg.map((p) => {
+                const n = String(p.name || "").toUpperCase();
+
+                let shape = "circle";
+                let color = "#16a34a";
+
+                if (n === "HZ") {
+                  shape = "diamond";
+                  color = "#dc2626";
+                } else if (n === "TOMACAJA1") {
+                  shape = "circle";
+                  color = "#1618a3";
+                } else if (n === "TOMACAJA2") {
+                  shape = "triangle";
+                  color = "#16a34a";
+                } else if (n.startsWith("TRANS")) {
+                  shape = "triangle";
+                  color = "#f97316";
+                } else if (n.startsWith("PALLET")) {
+                  shape = "square";
+                  color = "#9333ea";
+                }
+
+                const left = Math.round(p.x_px);
+                const top = Math.round(p.y_px);
+
+                return (
+                  <div
+                    key={`ref-${p.name}`}
+                    style={{
+                      position: "absolute",
+                      left,
+                      top,
+                      width: 0,
+                      height: 0,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {shape === "circle" && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: -6,
+                          top: -6,
+                          width: 12,
+                          height: 12,
+                          borderRadius: "50%",
+                          background: color,
+                          border: "2px solid white",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    )}
+
+                    {shape === "square" && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: -6,
+                          top: -6,
+                          width: 12,
+                          height: 12,
+                          background: color,
+                          border: "2px solid white",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    )}
+
+                    {shape === "diamond" && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: -6,
+                          top: -6,
+                          width: 12,
+                          height: 12,
+                          background: color,
+                          border: "2px solid white",
+                          boxSizing: "border-box",
+                          transform: "rotate(45deg)",
+                          transformOrigin: "center",
+                        }}
+                      />
+                    )}
+
+                    {shape === "triangle" && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: -7,
+                          top: -7,
+                          width: 0,
+                          height: 0,
+                          borderLeft: "7px solid transparent",
+                          borderRight: "7px solid transparent",
+                          borderBottom: `14px solid ${color}`,
+                          filter: "drop-shadow(0 0 0 white)",
+                        }}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+
         </div>
       </div>
 
       {/* DERECHA */}
       <div
         style={{
-          border: "1px solid #ddd",
-          borderRadius: 10,
-          padding: 8,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: "2px 12px",
           overflow: "auto",
           maxHeight: "calc(100vh - 32px)",
           fontSize: 13,
           position: "sticky",
           top: 16,
+          background: "#ffffff",
+          boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
         }}
       >
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 900, marginBottom: 8 }}>
-            Agregar (crea área azul)
-          </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
-            <label style={{ fontSize: 12, color: "#333" }}>label (máx 5)</label>
-            <input
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              placeholder="B1"
-            />
+        
 
-            <label style={{ fontSize: 12, color: "#333" }}>coordenadas (x,y)</label>
-            <input
-              value={newXY}
-              onChange={(e) => setNewXY(e.target.value)}
-              placeholder="(43, 544)"
-            />
+        
 
-            <label style={{ fontSize: 12, color: "#333" }}>ancho (mm)</label>
-            <input
-              type="number"
-              value={newW}
-              onChange={(e) => setNewW(Number(e.target.value || 0))}
-            />
-
-            <label style={{ fontSize: 12, color: "#333" }}>alto (mm)</label>
-            <input
-              type="number"
-              value={newH}
-              onChange={(e) => setNewH(Number(e.target.value || 0))}
-            />
-          </div>
-
-          {addOneError ? (
-            <div style={{ marginTop: 8, color: "#b00020", fontSize: 12 }}>
-              {addOneError}
-            </div>
-          ) : null}
-
-          <button
-            onClick={addOnePoint}
-            style={{
-              marginTop: 10,
-              padding: "8px 10px",
-              cursor: "pointer",
-              width: "100%",
-            }}
-          >
-            Agregar (crea área azul)
-          </button>
-        </div>
 
         {areaMenu.open &&
           (() => {
@@ -1427,7 +2083,9 @@ export default function CartesianPlayground() {
                   Cambia label y/o el punto (x,y) del “centro interior”.
                 </div>
 
-                <div style={{ fontSize: 12, marginBottom: 6 }}>Label (máx 5)</div>
+                <div style={{ fontSize: 12, marginBottom: 6 }}>
+                  Label (máx 5)
+                </div>
                 <input
                   value={areaMenu.draftLabel}
                   onChange={(e) =>
@@ -1475,7 +2133,12 @@ export default function CartesianPlayground() {
                     style={{
                       padding: "8px 10px",
                       cursor: "pointer",
-                      color: "#b00020",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#dc2626",
+                      color: "#fff",
+                      fontWeight: 600,
+                      fontSize: 13,
                     }}
                   >
                     Eliminar
@@ -1485,7 +2148,505 @@ export default function CartesianPlayground() {
             );
           })()}
 
-        <div style={{ borderTop: "1px solid #eee", paddingTop: 12 }}>
+        
+
+
+
+        <div
+          style={{
+            paddingTop: 12,
+          }}
+        >
+
+
+
+          <div
+  style={{
+    
+    paddingTop: 12,
+    marginTop: 12,
+  }}
+>
+
+<div style={sectionGroupStyle}>
+  <div style={sectionGroupTitleStyle}>Configuración y áreas</div>
+
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8,
+    }}
+  >
+    <div style={{ fontWeight: 900 }}>Pisos y altura Z</div>
+
+    <button
+      onClick={() => setFloorPanelOpen((v) => !v)}
+      style={{
+        border: "1px solid #0f766e",
+        background: floorPanelOpen ? "#0f766e" : "#ccfbf1",
+        color: floorPanelOpen ? "#ffffff" : "#115e59",
+        borderRadius: 6,
+        padding: "4px 8px",
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      {floorPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+    </button>
+  </div>
+
+
+
+
+            <div
+              style={{
+                paddingTop: 12,
+                marginTop: 12,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 8,
+                }}
+              >
+                <div style={{ fontWeight: 900 }}>Agregar (crea área azul)</div>
+
+                <button
+                  onClick={() => setAddPanelOpen((v) => !v)}
+                  style={{
+                    border: "1px solid #2563eb",
+                    background: addPanelOpen ? "#2563eb" : "#dbeafe",
+                    color: addPanelOpen ? "#ffffff" : "#1d4ed8",
+                    borderRadius: 6,
+                    padding: "4px 8px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  {addPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+                </button>
+              </div>
+
+
+  {floorPanelOpen && (
+    <>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: 8,
+          marginBottom: 10,
+        }}
+      >
+        <div>
+          <label style={{ fontSize: 12, color: "#333" }}>Piso</label>
+          <input
+            type="number"
+            min={1}
+            value={newFloorNumber}
+            onChange={(e) => {
+              const nextFloor = Number(e.target.value || 1);
+              setNewFloorNumber(nextFloor);
+              setNewFloorZ(getSuggestedFloorZBase(nextFloor));
+            }}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div>
+          <label style={{ fontSize: 12, color: "#333" }}>Z base (mm)</label>
+          <input
+            type="number"
+            value={newFloorZ}
+            onChange={(e) => setNewFloorZ(Number(e.target.value || 0))}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div>
+          <label style={{ fontSize: 12, color: "#333" }}>Color</label>
+          <input
+            type="color"
+            value={newFloorColor}
+            onChange={(e) => setNewFloorColor(e.target.value)}
+            style={{ width: "100%", height: 38, padding: 2 }}
+          />
+        </div>
+      </div>
+
+      <button
+        onClick={saveFloorDef}
+        style={{
+          width: "100%",
+          padding: "8px 10px",
+          cursor: "pointer",
+          marginBottom: 10,
+        }}
+      >
+        Guardar piso
+      </button>
+
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: 8,
+          background: "#fafafa",
+          display: "grid",
+          gap: 6,
+        }}
+      >
+        {floorDefs.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#666" }}>
+            No hay pisos definidos.
+          </div>
+        ) : (
+          floorDefs.map((f) => (
+            <div
+              key={f.floor}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                borderBottom: "1px solid #eee",
+                paddingBottom: 6,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    width: 14,
+                    height: 14,
+                    background: f.color,
+                    border: "1px solid #999",
+                    display: "inline-block",
+                    borderRadius: 3,
+                  }}
+                />
+                <span>
+                  <b>Piso {f.floor}</b> — Z base: {f.zBase} mm
+                </span>
+              </div>
+
+              <button
+                onClick={() => deleteFloorDef(f.floor)}
+                style={{
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#fff",
+                  borderRadius: 6,
+                  padding: "4px 8px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                Eliminar
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </>
+  )}
+</div>
+
+
+
+{addPanelOpen && (
+                <>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr",
+                      gap: 8,
+                    }}
+                  >
+                    <div>
+                      <label style={{ fontSize: 12, color: "#333", display: "block", marginBottom: 4 }}>
+                        label (máx 5):
+                      </label>
+                      <input
+                        value={newLabel}
+                        onChange={(e) => setNewLabel(e.target.value)}
+                        placeholder="B1"
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          border: "1px solid #d0d5dd",
+                          background: "#fff",
+                          color: "#111827",
+                          fontSize: 13,
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: 12, color: "#333", display: "block", marginBottom: 4 }}>
+                        coordenadas (x,y):
+                      </label>
+                      <input
+                        value={newXY}
+                        onChange={(e) => setNewXY(e.target.value)}
+                        placeholder="(43, 544)"
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          border: "1px solid #d0d5dd",
+                          background: "#fff",
+                          color: "#111827",
+                          fontSize: 13,
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: 12, color: "#333", display: "block", marginBottom: 4 }}>
+                        piso:
+                      </label>
+                      <select
+                        value={newFloorSelected}
+                        onChange={(e) => setNewFloorSelected(Number(e.target.value))}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          border: "1px solid #d0d5dd",
+                          background: "#fff",
+                          color: "#111827",
+                          fontSize: 13,
+                          boxSizing: "border-box",
+                        }}
+                      >
+                        {floorDefs.map((f) => (
+                          <option key={f.floor} value={f.floor}>
+                            Piso {f.floor}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 8,
+                      }}
+                    >
+                      <div>
+                        <label style={{ fontSize: 12, color: "#333", display: "block", marginBottom: 4 }}>
+                          ancho (mm):
+                        </label>
+                        <input
+                          type="number"
+                          value={newW}
+                          onChange={(e) => setNewW(Number(e.target.value || 0))}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: "1px solid #d0d5dd",
+                            background: "#fff",
+                            color: "#111827",
+                            fontSize: 13,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: 12, color: "#333", display: "block", marginBottom: 4 }}>
+                          alto (mm):
+                        </label>
+                        <input
+                          type="number"
+                          value={newH}
+                          onChange={(e) => setNewH(Number(e.target.value || 0))}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: "1px solid #d0d5dd",
+                            background: "#fff",
+                            color: "#111827",
+                            fontSize: 13,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {addOneError ? (
+                    <div style={{ marginTop: 8, color: "#b00020", fontSize: 12 }}>
+                      {addOneError}
+                    </div>
+                  ) : null}
+
+                  <button
+                    onClick={addOnePoint}
+                    style={{
+                      marginTop: 10,
+                      padding: "9px 12px",
+                      cursor: "pointer",
+                      width: "100%",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#2563eb",
+                      color: "#fff",
+                      fontWeight: 600,
+                      fontSize: 13,
+                    }}
+                  >
+                    Agregar (crea área azul)
+                  </button>
+                </>
+              )}
+
+
+
+
+
+
+
+        {/* ✅ lista de áreas azules */}
+          <div
+            style={{
+              paddingTop: 12,
+              marginTop: 12,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ fontWeight: 900 }}>
+                Items agregadas ({filteredBlueAreasList.length})
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <select
+                  value={blueAreasFloorFilter}
+                  onChange={(e) => setBlueAreasFloorFilter(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    border: "1px solid #d0d5dd",
+                    background: "#fff",
+                    color: "#111827",
+                    fontSize: 12,
+                  }}
+                >
+                  <option value="ALL">Todos</option>
+                  {floorDefs.map((f) => (
+                    <option key={f.floor} value={String(f.floor)}>
+                      Piso {f.floor}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => setBlueAreasPanelOpen((v) => !v)}
+                  style={{
+                    border: "1px solid #3d3d42",
+                    background: blueAreasPanelOpen ? "#dc2626" : "#fee2e2",
+                    color: blueAreasPanelOpen ? "#ffffff" : "#991b1b",
+                    borderRadius: 6,
+                    padding: "4px 8px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  {blueAreasPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+                </button>
+              </div>
+            </div>
+
+            {blueAreasPanelOpen && (
+            <div
+              style={{
+                border: "3px dashed #ff00ff",
+                borderRadius: 8,
+                padding: 10,
+                minHeight: 120,
+                background: "#4c4949",
+                color: "#ffffff",
+                display: "grid",
+                gap: 8,
+              }}
+            >
+              {filteredBlueAreasList.length === 0 ? (
+                <div style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  — (no hay áreas azules para ese piso) —
+                </div>
+              ) : (
+                filteredBlueAreasList.map((b) => (
+                  <div
+                    key={b.id}
+                    style={{
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      borderRadius: 8,
+                      padding: 8,
+                      display: "grid",
+                      gap: 6,
+                      background: "rgba(255,255,255,0.04)",
+                    }}
+                  >
+                    <div style={{ fontFamily: "monospace", fontSize: 13 }}>
+                      {b.label}, piso={b.floor}, (x={b.x}, y={b.y}), rot={b.rotationDeg}°, zBase={floorDefs.find(f => Number(f.floor) === Number(b.floor))?.zBase ?? -900}
+                    </div>
+
+                    <button
+                      onClick={() => rotateArea90(b.id)}
+                      style={{
+                        padding: "6px 8px",
+                        cursor: "pointer",
+                        borderRadius: 6,
+                        border: "none",
+                        background: "#2563eb",
+                        color: "#fff",
+                        fontWeight: 700,
+                        fontSize: 12,
+                      }}
+                    >
+                      Girar 90°
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+          </div>
+
+
+</div>
+
+
+
+<div style={sectionGroupStyle}>
+  <div style={sectionGroupTitleStyle}>Grupo 2 · Mapa Robot y Pallets</div>
           <div
             style={{
               display: "flex",
@@ -1494,85 +2655,354 @@ export default function CartesianPlayground() {
               gap: 8,
             }}
           >
-            <div style={{ fontWeight: 900 }}>Área a pintar (múltiples)</div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-              <input
-                type="checkbox"
-                checked={paintEnabled}
-                onChange={(e) => setPaintEnabled(e.target.checked)}
-              />
-              Mostrar
-            </label>
-          </div>
 
-          <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-            Formato por línea: <b>Label,(x,y),(x,y),(x,y)...</b> (Label máx 5)
-          </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 13,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={paintEnabled}
+                  onChange={(e) => setPaintEnabled(e.target.checked)}
+                />
+                Mostrar
+              </label>
 
-          <textarea
-            value={paintAreasText}
-            onChange={(e) => setPaintAreasText(e.target.value)}
-            rows={8}
-            style={{
-              width: "100%",
-              marginTop: 8,
-              fontFamily: "monospace",
-              fontSize: 12,
-              padding: 8,
-              boxSizing: "border-box",
-              borderRadius: 8,
-              border: "1px solid #ddd",
-            }}
-          />
-
-          {paintAreasError ? (
-            <div style={{ marginTop: 8, color: "#b00020", fontSize: 13 }}>
-              {paintAreasError}
+              <button
+                onClick={() => setPaintPanelOpen((v) => !v)}
+                style={{
+                  border: "1px solid #2563eb",
+                  background: paintPanelOpen ? "#2563eb" : "#dbeafe",
+                  color: paintPanelOpen ? "#ffffff" : "#1d4ed8",
+                  borderRadius: 6,
+                  padding: "4px 8px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {paintPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+              </button>
             </div>
-          ) : null}
+          </div>
+
+          {paintPanelOpen && (
+            <>
+              <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
+                Formato por línea: <b>Label,(x,y),(x,y),(x,y)...</b> (Label máx 5)
+              </div>
+
+              <textarea
+                value={paintAreasText}
+                onChange={(e) => setPaintAreasText(e.target.value)}
+                rows={8}
+                style={{
+                  width: "100%",
+                  marginTop: 8,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  padding: 8,
+                  boxSizing: "border-box",
+                  borderRadius: 8,
+                  border: "1px solid #ddd",
+                }}
+              />
+
+              {paintAreasError ? (
+                <div style={{ marginTop: 8, color: "#b00020", fontSize: 13 }}>
+                  {paintAreasError}
+                </div>
+              ) : null}
+
+              <button
+                onClick={applyPaintAreas}
+                style={{
+                  marginTop: 10,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                  width: "100%",
+                }}
+              >
+                Aplicar áreas
+              </button>
+
+              <div
+                style={{
+                  marginTop: 8,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "#555",
+                }}
+              >
+                áreas cargadas: {paintAreas?.length ?? 0}
+              </div>
+            </>
+          )}
+        </div>
+
+
+
+
+              
+            </div>
+
+
+
+
+      {/* codigo agregar pisos */}
+</div>
+
+
+
+
+
+
+
+<div style={sectionGroupStyle}>
+  <div style={sectionGroupTitleStyle}>Generar Lua
 
           <button
-            onClick={applyPaintAreas}
-            style={{
-              marginTop: 10,
-              padding: "8px 10px",
-              cursor: "pointer",
-              width: "100%",
-            }}
-          >
-            Aplicar áreas
-          </button>
+      onClick={() => setLuaPanelOpen((v) => !v)}
+      style={{
+        border: "1px solid #7c3aed",
+        background: luaPanelOpen ? "#7c3aed" : "#ede9fe",
+        color: luaPanelOpen ? "#ffffff" : "#5b21b6",
+        borderRadius: 6,
+        padding: "4px 8px",
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      {luaPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+    </button>
 
-          <div style={{ marginTop: 8, fontFamily: "monospace", fontSize: 12, color: "#555" }}>
-            áreas cargadas: {paintAreas?.length ?? 0}
-          </div>
+
+  </div>
+
+        {/* ✅ NUEVO: GENERAR LUA PISO 1 */}
+        <div
+  style={{
+    paddingTop: 12,
+    marginTop: 12,
+  }}
+>
+
+  
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8,
+    }}
+  >
+    
+
+    
+  </div>
+
+  {luaPanelOpen && (
+    <>
+
+
+      <button
+        onClick={() => {
+          const boxes = sortBoxesForLua(
+          (paintAreas ?? [])
+            .filter((a) => a.source === "single")
+            .filter((a) =>
+              blueAreasFloorFilter === "ALL"
+                ? true
+                : String(a.floor) === String(blueAreasFloorFilter)
+            )
+            .map((a) => {
+              const p = areaSummaryPointMm(a);
+              const floorNumber = a.floor ?? 1;
+              const floorDef = floorDefs.find((f) => Number(f.floor) === Number(floorNumber));
+
+              return {
+                id: a.id,
+                label: a.label,
+                x: p.x,
+                y: p.y,
+                floor: floorNumber,
+                rotationDeg: a.rotationDeg ?? 0,
+                zBase: Number(floorDef?.zBase ?? -900),
+              };
+            })
+        );
+
+          const lua = generateLuaFloor1({ boxes });
+          setLuaFloor1Text(lua);
+        }}
+        style={{
+          marginTop: 10,
+          padding: "8px 10px",
+          cursor: "pointer",
+          width: "100%",
+        }}
+      >
+        Generar secuencia Piso 1
+      </button>
+
+      <textarea
+        value={luaFloor1Text}
+        readOnly
+        rows={12}
+        style={{
+          width: "100%",
+          marginTop: 10,
+          fontFamily: "monospace",
+          fontSize: 12,
+          padding: 8,
+          boxSizing: "border-box",
+          borderRadius: 8,
+          border: "2px dashed #ff00ff",
+          background: "#7f1d1d",
+          color: "#ffffff",
+        }}
+      />
+
+
+      <button
+        onClick={() => {
+          if (!luaFloor1Text.trim()) {
+            alert("Primero genera el código LUA.");
+            return;
+          }
+          downloadTextFile("piso1_lua.txt", luaFloor1Text);
+        }}
+        style={{
+          marginTop: 8,
+          padding: "8px 10px",
+          cursor: "pointer",
+          width: "100%",
+          borderRadius: 8,
+          border: "none",
+          background: "#16a34a",
+          color: "#fff",
+          fontWeight: 600,
+          fontSize: 13,
+        }}
+      >
+        Exportar LUA (.txt)
+      </button>
+
+
+    </>
+  )}
         </div>
+        {/* ✅ FIN: GENERAR LUA PISO 1 */}
+  </div>
 
-        {/* ✅ NUEVO DIV: lista de áreas azules */}
-        <div style={{ borderTop: "1px solid #eee", paddingTop: 12, marginTop: 12 }}>
-          <div style={{ fontWeight: 900, marginBottom: 8 }}>
-            Áreas azules agregadas ({blueAreasList.length})
-          </div>
 
-          <div
-            style={{
-              border: "3px solid #111",
-              borderRadius: 8,
-              padding: 10,
-              minHeight: 120,
-              fontFamily: "monospace",
-              fontSize: 13,
-              whiteSpace: "pre-wrap",
-              lineHeight: 1.35,
-            }}
-          >
-            {blueAreasList.length === 0
-              ? "— (no hay áreas azules todavía) —"
-              : blueAreasList
-                  .map((b) => `${b.label}, (x=${b.x}, y=${b.y})`)
-                  .join("\n")}
-          </div>
-        </div>
+<div style={sectionGroupStyle}>
+  <div style={sectionGroupTitleStyle}>Proyectos (Importar y Exportar)
+        {/* ✅ Begin: Importar y exportar distribución*/}
+
+        <button
+        onClick={() => setProjectPanelOpen((v) => !v)}
+        style={{
+          border: "1px solid #7c3aed",
+          background: projectPanelOpen ? "#7c3aed" : "#ede9fe",
+          color: projectPanelOpen ? "#ffffff" : "#5b21b6",
+          borderRadius: 6,
+          padding: "4px 8px",
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 700,
+        }}
+      >
+        {projectPanelOpen ? "Cerrar ▲" : "Abrir ▼"}
+      </button>
+  <div
+    style={{
+      paddingTop: 12,
+      marginTop: 12,
+    }}
+  >
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 8,
+      }}
+    >
+      
+
+
+      
+
+      
+    </div>
+
+    {projectPanelOpen && (
+      <div style={{ display: "grid", gap: 8 }}>
+        <button
+          onClick={exportProjectToJson}
+          style={{
+            padding: "8px 10px",
+            cursor: "pointer",
+            width: "100%",
+            borderRadius: 8,
+            border: "none",
+            background: "#2563eb",
+            color: "#fff",
+            fontWeight: 600,
+            fontSize: 13,
+          }}
+        >
+          Guardar proyecto (.json)
+        </button>
+
+        <button
+          onClick={() => importProjectInputRef.current?.click()}
+          style={{
+            padding: "8px 10px",
+            cursor: "pointer",
+            width: "100%",
+            borderRadius: 8,
+            border: "none",
+            background: "#7c3aed",
+            color: "#fff",
+            fontWeight: 600,
+            fontSize: 13,
+          }}
+        >
+          Cargar proyecto (.json)
+        </button>
+
+        <input
+          ref={importProjectInputRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            importProjectFromFile(file);
+            e.target.value = "";
+          }}
+        />
+      </div>
+    )}
+
+
+  </div>
+        {/* ✅ END: Importar y exportar distribución*/}
+  </div>
+</div>
+
+
+
       </div>
     </div>
   );

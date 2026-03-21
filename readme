@@ -1,0 +1,114 @@
+pmatriz-planner
+
+pmatriz-planner es una herramienta para diseñar y visualizar layouts de cajas dentro de un espacio de trabajo cartesiano.
+El objetivo es facilitar la planificación de distribución de cajas y posteriormente generar coordenadas utilizables para robots o sistemas automatizados.
+
+Tecnologías utilizadas
+
+- React + Vite para el frontend
+- Docker + PostgreSQL para los servicios backend
+- Node.js para el entorno de desarrollo
+
+
+REQUISITOS
+
+Antes de iniciar asegúrate de tener instalado:
+
+- Docker Desktop
+- Node.js (v18 o superior)
+- npm
+- Git
+- PowerShell (Windows)
+
+
+1. INICIAR DOCKER
+
+Primero asegúrate de que Docker Desktop esté corriendo.
+
+Luego abre PowerShell y entra al proyecto:
+
+cd C:\proyectos\github\pmatriz-planner
+
+Levantar los servicios:
+
+docker compose up -d
+
+Esto iniciará los contenedores definidos en docker-compose.yml.
+
+Para verificar que estén activos:
+
+docker ps
+
+
+2. INICIAR EL FRONTEND (React + Vite)
+
+Abrir PowerShell y entrar al frontend:
+
+cd C:\proyectos\github\pmatriz-planner\ui
+
+Instalar dependencias (solo la primera vez):
+
+npm install
+
+Iniciar el servidor de desarrollo:
+
+npm run dev
+
+Debería aparecer algo similar a:
+
+VITE v7.x ready
+Local: http://localhost:5173
+
+Abrir en el navegador:
+
+http://localhost:5173
+
+
+3. ESTRUCTURA DEL PROYECTO
+
+pmatriz-planner
+
+│
+├─ api
+│   backend / servicios
+│
+├─ ui
+│   React + Vite frontend
+│
+├─ docker-compose.yml
+│
+└─ README.md
+
+
+4. DESARROLLO
+
+El frontend se recarga automáticamente cuando se realizan cambios en el código.
+
+Archivo principal del playground:
+
+ui/src/App.jsx
+
+Actualmente el proyecto incluye funcionalidades como:
+
+- Drag de cajas
+- Snap a posiciones
+- Visualización de layout
+- Identificación de layout_id, version_id y created_at
+
+
+5. PRÓXIMOS PASOS
+
+Futuras mejoras del proyecto:
+
+- Agregar botón Add Box
+- Cambiar orientación Horizontal / Vertical
+- Guardar layouts en base de datos
+- API para persistencia
+- Generación de coordenadas para robots
+- Exportación de layouts
+
+
+AUTOR
+
+Rodrigo Rodríguez
+Ingeniero Civil en Informática
