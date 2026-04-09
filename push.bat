@@ -14,20 +14,10 @@ echo Subiendo cambios a GitHub [%fecha% %hora%]
 echo ==========================
 echo.
 
-echo [1/6] Verificando rama actual...
-git branch --show-current
-if errorlevel 1 (
-    echo ERROR: No se pudo obtener la rama actual.
-    pause
-    exit /b
-)
-echo.
-
-echo [2/6] Estado actual del repositorio:
+echo [1/5] Estado actual:
 git status --short
 echo.
 
-REM ===== Validar si hay cambios =====
 git diff --quiet
 if not errorlevel 1 (
     git diff --cached --quiet
@@ -38,20 +28,21 @@ if not errorlevel 1 (
     )
 )
 
-set /p continuar=Hay cambios. Quieres continuar? (S/N): 
+set /p continuar=Hay cambios. Continuar? (S/N): 
 if /I not "!continuar!"=="S" (
-    echo Cancelado por el usuario.
+    echo Cancelado.
     pause
     exit /b
 )
 
 echo.
-echo Escribe el mensaje del commit linea por linea.
-echo Cuando termines, escribe FIN y presiona Enter.
+echo Escribe SOLO el detalle (sin titulo).
+echo Cuando termines, escribe FIN.
 echo.
 
-REM ===== Mensaje con fecha =====
-set mensaje=-m "[%fecha% %hora%]"
+REM ===== TITULO AUTOMATICO =====
+set titulo=[%fecha% %hora%] feat: mejoras UI + generacion Lua por pisos + control de rotacion
+set mensaje=-m "!titulo!"
 
 :loop
 set /p linea=
@@ -61,45 +52,33 @@ set mensaje=!mensaje! -m "!linea!"
 goto loop
 
 :fin
-if "!mensaje!"=="-m [%fecha% %hora%]" (
-    echo No escribiste ningun mensaje. Cancelando commit.
-    pause
-    exit /b
-)
 
 echo.
-echo [3/6] Agregando archivos...
+echo [2/5] git add...
 git add .
-if errorlevel 1 (
-    echo ERROR: fallo git add .
-    pause
-    exit /b
-)
 
 echo.
-echo [4/6] Haciendo commit...
+echo [3/5] commit...
 git commit !mensaje!
 if errorlevel 1 (
-    echo ERROR: fallo git commit.
-    echo Puede que no haya cambios reales.
+    echo ERROR en commit
     pause
     exit /b
 )
 
 echo.
-echo [5/6] Haciendo push a origin main...
+echo [4/5] push...
 git push origin main
 if errorlevel 1 (
-    echo ERROR: fallo git push
+    echo ERROR en push
     pause
     exit /b
 )
 
 echo.
 echo ==========================
-echo DONE - Commit y push completados
+echo DONE
 echo ==========================
-echo.
 
 git log --oneline -3
 
