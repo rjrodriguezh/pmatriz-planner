@@ -5,16 +5,16 @@ setlocal EnableDelayedExpansion
 
 title Git helper - pmatriz-planner
 
+REM ===== Fecha y hora formateada =====
+set fecha=%date:~6,4%-%date:~3,2%-%date:~0,2%
+set hora=%time:~0,8%
+
 echo ==========================
-echo Subiendo cambios a GitHub [%date% %time%]
+echo Subiendo cambios a GitHub [%fecha% %hora%]
 echo ==========================
 echo.
 
-echo [1/6] Verificando carpeta actual...
-cd
-echo.
-
-echo [2/6] Verificando rama actual...
+echo [1/6] Verificando rama actual...
 git branch --show-current
 if errorlevel 1 (
     echo ERROR: No se pudo obtener la rama actual.
@@ -23,10 +23,11 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/6] Estado actual del repositorio:
+echo [2/6] Estado actual del repositorio:
 git status --short
 echo.
 
+REM ===== Validar si hay cambios =====
 git diff --quiet
 if not errorlevel 1 (
     git diff --cached --quiet
@@ -49,7 +50,8 @@ echo Escribe el mensaje del commit linea por linea.
 echo Cuando termines, escribe FIN y presiona Enter.
 echo.
 
-set mensaje=
+REM ===== Mensaje con fecha =====
+set mensaje=-m "[%fecha% %hora%]"
 
 :loop
 set /p linea=
@@ -59,14 +61,14 @@ set mensaje=!mensaje! -m "!linea!"
 goto loop
 
 :fin
-if "!mensaje!"=="" (
+if "!mensaje!"=="-m [%fecha% %hora%]" (
     echo No escribiste ningun mensaje. Cancelando commit.
     pause
     exit /b
 )
 
 echo.
-echo [4/6] Agregando archivos...
+echo [3/6] Agregando archivos...
 git add .
 if errorlevel 1 (
     echo ERROR: fallo git add .
@@ -75,20 +77,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo [5/6] Haciendo commit...
+echo [4/6] Haciendo commit...
 git commit !mensaje!
 if errorlevel 1 (
     echo ERROR: fallo git commit.
-    echo Puede que no haya cambios reales o haya otro problema.
+    echo Puede que no haya cambios reales.
     pause
     exit /b
 )
 
 echo.
-echo [6/6] Haciendo push a origin main...
+echo [5/6] Haciendo push a origin main...
 git push origin main
 if errorlevel 1 (
-    echo ERROR: fallo git push origin main
+    echo ERROR: fallo git push
     pause
     exit /b
 )
