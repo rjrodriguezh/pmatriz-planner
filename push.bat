@@ -1,9 +1,9 @@
 @echo off
-cd /d C:\proyectos\github\pmatriz-planner
+cd /d C:\proyectos\github\rrfairino
 
 setlocal EnableDelayedExpansion
 
-title Git helper - pmatriz-planner
+title Git helper - rrfairino
 
 REM ===== Fecha y hora formateada =====
 set fecha=%date:~6,4%-%date:~3,2%-%date:~0,2%

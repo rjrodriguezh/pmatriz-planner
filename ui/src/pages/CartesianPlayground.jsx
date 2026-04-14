@@ -1,21 +1,51 @@
 //CartesianPlayground.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react"; 
 import RobotScene3D from "./RobotScene3D";
-import { messages } from "/src/i18n.js";
+import { messages } from "../i18n";
 
-function getAutoFloorColor(floor) {
-  const colors = [
-    "#2563eb", // azul
-    "#22c55e", // verde
-    "#92400e", // café
-    "#f97316", // naranjo
-    "#7c3aed", // morado (extra)
-    "#c3ed3a", // morado (extra)
-  ];
+import { buildFairinoLuaFile } from "../services/fairinoAdapter";
 
-  const index = (Number(floor) - 1) % colors.length;
-  return colors[index];
-}
+import { getAutoFloorColor, getContrastTextColor } from "../utils/colors";
+import {
+  truncateLabel5,
+  normalizeLabel,
+  parseBlueLabelNumber,
+  parseBoxNumber,
+  getNextGlobalBlueNumber,
+  getNextBlueLabel,
+  labelBoxForValue,
+} from "../utils/labels";
+import { sortBlueAreasForList, sortBoxesForLua } from "../utils/sorting";
+import { clamp, snapToStep, getNextFloorNumber, getSuggestedFloorZBase } from "../utils/workspace";
+import {
+  rotatePointAroundCenter,
+  rotatePolygon,
+  pointInPolygon,
+  polygonCentroid,
+  findInteriorPoint,
+  normalizeRotationDeg,
+  rectAreaFromCenter,
+  getAreaCenter,
+  getAreaBBoxSize,
+  getRotationDeg,
+} from "../utils/geometry";
+
+import {
+  downloadTextFile,
+  downloadJsonFile,
+  exportProjectData,
+  importProjectData,
+} from "../services/projectService";
+
+import {
+  generateLuaFloor,
+  generateLuaAllFloors,
+} from "../services/luaService";
+
+
+import { buildFairinoProject } from "../services/fairinoAdapter";
+
+
 
 
 function syncRotationWithY(currentRotation, centerY) {
@@ -80,59 +110,6 @@ function frontXToSvg(xMm) {
   return leftPad + ((xMm - minX) / (maxX - minX)) * width;
 }
 
-function getContrastTextColor(hexColor) {
-  if (!hexColor) return "#000";
-
-  const c = hexColor.replace("#", "");
-  const r = parseInt(c.substring(0, 2), 16);
-  const g = parseInt(c.substring(2, 4), 16);
-  const b = parseInt(c.substring(4, 6), 16);
-
-  // luminancia
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
-
-  return luminance > 150 ? "#000000" : "#ffffff";
-}
-
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function snapToStep(value, step) {
-  if (!step || step <= 0) return value;
-  return Math.round(value / step) * step;
-}
-
-function truncateLabel5(label) {
-  const s = (label ?? "").trim();
-  if (!s) return "";
-  return s;
-}
-
-function rotatePointAroundCenter(px, py, cx, cy, angleDeg) {
-  const rad = (angleDeg * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-
-  const dx = px - cx;
-  const dy = py - cy;
-
-  return {
-    x: cx + dx * cos - dy * sin,
-    y: cy + dx * sin + dy * cos,
-  };
-}
-
-function rotatePolygon(points, angleDeg) {
-  if (!points || points.length === 0) return points ?? [];
-
-  const center = findInteriorPoint(points);
-
-  return points.map((p) =>
-    rotatePointAroundCenter(p.x, p.y, center.x, center.y, angleDeg)
-  );
-}
-
 
   function nextRotationDeg(current, y) {
     const r = Number(current) || 0;
@@ -162,32 +139,6 @@ function getRotationFromY(y) {
   return 0;
 }
 
-function normalizeRotationDeg(value) {
-  const n = Number(value) || 0;
-
-  if (n <= -45) return -90;
-  if (n >= 45) return 90;
-  return 0;
-}
-
-
-function rectAreaFromCenter(cx, cy, w, h) {
-  const halfW = w / 2;
-  const halfH = h / 2;
-
-  const left = cx - halfW;
-  const right = cx + halfW;
-  const bottom = cy - halfH;
-  const top = cy + halfH;
-
-  // orden: left-bottom, left-top, right-top, right-bottom
-  return [
-    { x: left, y: bottom },
-    { x: left, y: top },
-    { x: right, y: top },
-    { x: right, y: bottom },
-  ];
-}
 
 function formatAreaCSVLine(label, points) {
   const L = truncateLabel5(label) || "AREA";
@@ -250,80 +201,6 @@ function parseAreaCSVLine(line) {
   return { ok: true, label, points };
 }
 
-/** Ray casting. poly = [{x,y},...] */
-function pointInPolygon(pt, poly) {
-  const x = pt.x;
-  const y = pt.y;
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x,
-      yi = poly[i].y;
-    const xj = poly[j].x,
-      yj = poly[j].y;
-
-    const intersect =
-      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
-/** Centroid (área ponderada). */
-function polygonCentroid(poly) {
-  let a = 0;
-  let cx = 0;
-  let cy = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const j = (i + 1) % poly.length;
-    const x0 = poly[i].x;
-    const y0 = poly[i].y;
-    const x1 = poly[j].x;
-    const y1 = poly[j].y;
-    const cross = x0 * y1 - x1 * y0;
-    a += cross;
-    cx += (x0 + x1) * cross;
-    cy += (y0 + y1) * cross;
-  }
-  a *= 0.5;
-  if (Math.abs(a) < 1e-9) {
-    const avg = poly.reduce(
-      (acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }),
-      { x: 0, y: 0 }
-    );
-    return { x: avg.x / poly.length, y: avg.y / poly.length };
-  }
-  cx /= 6 * a;
-  cy /= 6 * a;
-  return { x: cx, y: cy };
-}
-
-function findInteriorPoint(poly) {
-  if (!poly || poly.length < 3) return { x: 0, y: 0 };
-
-  // 1) centroide si cae dentro
-  const c = polygonCentroid(poly);
-  if (pointInPolygon(c, poly)) return c;
-
-  // 2) promedio si cae dentro
-  const avg = poly.reduce(
-    (acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }),
-    { x: 0, y: 0 }
-  );
-  const avgPt = { x: avg.x / poly.length, y: avg.y / poly.length };
-  if (pointInPolygon(avgPt, poly)) return avgPt;
-
-  // 3) búsqueda local
-  const step = 10;
-  for (let r = 1; r <= 20; r++) {
-    for (let dx = -r; dx <= r; dx++) {
-      for (let dy = -r; dy <= r; dy++) {
-        const pt = { x: c.x + dx * step, y: c.y + dy * step };
-        if (pointInPolygon(pt, poly)) return pt;
-      }
-    }
-  }
-  return poly[0];
-}
 
 // helper label box coords
 
@@ -343,294 +220,44 @@ function normalizeReferencePoints(rawPoints) {
     }));
 }
 
-function normalizeLabel(label) {
-  return String(label ?? "").trim().toUpperCase();
-}
-
-
-function parseBlueLabelNumber(label) {
-  const m = String(label ?? "")
-    .trim()
-    .toUpperCase()
-    .match(/^B(\d+)$/);
-
-  return m ? Number(m[1]) : null;
-}
-
-function getNextGlobalBlueNumber(areas) {
-  const maxNum = Math.max(
-    0,
-    ...(areas ?? [])
-      .filter((a) => a.source === "single")
-      .map((a) => parseBlueLabelNumber(a.label))
-      .filter((n) => Number.isFinite(n))
-  );
-
-  return maxNum + 1;
-}
-
-function getNextFloorNumber(floorDefs, paintAreas) {
-  const floorsFromDefs = (floorDefs ?? [])
-    .map((f) => Number(f.floor))
-    .filter((n) => Number.isFinite(n));
-
-  const floorsFromAreas = (paintAreas ?? [])
-    .filter((a) => a.source === "single")
-    .map((a) => Number(a.floor ?? 1))
-    .filter((n) => Number.isFinite(n));
-
-  const maxFloor = Math.max(0, ...floorsFromDefs, ...floorsFromAreas);
-  return maxFloor + 1;
-}
-
-
-function getNextBlueLabel(areas) {
-  const usedNums = (areas ?? [])
-    .filter((a) => a.source === "single")
-    .map((a) => {
-      const m = normalizeLabel(a.label).match(/^B(\d+)$/);
-      return m ? Number(m[1]) : null;
-    })
-    .filter((n) => Number.isFinite(n));
-
-  let next = 1;
-  while (usedNums.includes(next)) next += 1;
-  return `B${next}`;
-}
-
-
-function labelBoxForValue(value, fontSizePx, paddingX = 3, paddingY = 2) {
-  const s = String(value);
-  const charW = fontSizePx * 0.62;
-  const w = Math.max(12, Math.ceil(s.length * charW + paddingX * 2));
-  const h = Math.max(8, Math.ceil(fontSizePx + paddingY * 2));
-  return { w, h, padX: paddingX, padY: paddingY };
-}
-
-
-
-
-function downloadTextFile(filename, content) {
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-
-  URL.revokeObjectURL(url);
-}
-
-function downloadJsonFile(filename, data) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
-    type: "application/json;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-
-  URL.revokeObjectURL(url);
-}
-
-/* =========================
-   LUA GENERATOR HELPERS
-   ========================= */
-function parseBoxNumber(label) {
-  const m = String(label || "").match(/\d+/);
-  return m ? Number(m[0]) : Number.POSITIVE_INFINITY;
-}
-
-
-function sortBlueAreasForList(list) {
-  return [...(list || [])].sort((a, b) => {
-    const na = parseBoxNumber(a.label);
-    const nb = parseBoxNumber(b.label);
-
-    if (na !== nb) return na - nb;
-    return String(a.label).localeCompare(String(b.label));
-  });
-}
-
-
-function sortBoxesForLua(list) {
-  return [...(list || [])].sort((a, b) => {
-    const na = parseBoxNumber(a.label);
-    const nb = parseBoxNumber(b.label);
-    if (na !== nb) return na - nb;
-    return String(a.label).localeCompare(String(b.label));
-  });
-}
-
-      function generateLuaFloor({ boxes, floorNumber }) {
-        const lines = [];
-
-        lines.push(`-- ####### PISO ${floorNumber}  #######`);
-        lines.push("");
-        lines.push("PTP(HZ,100,-1,0)");
-        lines.push("");
-
-        boxes.forEach((b) => {
-          const itemX = Math.round(b.x);
-          const itemY = Math.round(b.y);
-
-          const rz = normalizeRotationDeg(b.rotationDeg ?? 0);
-
-          let resultadoY = 0;
-          let resultadoX = 0;
-          let refY = 200;
-          let ptpRef = "";
-
-          let itemZ = 300;
-          let itemSafeZ = 20;
-          let ptpWaitZ = 0;
-          let ptpTransicionZ = 0;
-          let ptpLeftZ = 0;
-          let ptpLeftSafeZ = 0;
-
-          const zBase = Number(b.zBase ?? -900);
-
-          ptpTransicionZ = zBase + itemZ + 200 + refY;
-          ptpWaitZ = zBase + itemZ + refY;
-          ptpLeftZ = zBase + itemZ;
-          ptpLeftSafeZ = zBase + itemZ + itemSafeZ;
-
-          if (itemY < 0) {
-            resultadoY = itemY + 424;
-            resultadoX = itemX - (-623);
-            ptpRef = "PL";
-          } else {
-            resultadoX = itemX - (-623);
-            resultadoY = itemY - 424;
-            ptpRef = "PR";
-          }
-
-          const boxNumber = parseBoxNumber(b.label);
-
-          lines.push(`-- BOX ${boxNumber} - Valor X: ${resultadoX}= ${itemX} - (-623)`);
-          lines.push(`-- BOX ${boxNumber} - Valor Y: ${resultadoY} =${itemY} - 424`);
-          lines.push("SetAuxDO(4,0,0,0)");
-          lines.push("PTP(PickWait,100,-1,0)");
-          lines.push("PTP(PickSafe,100,-1,0)");
-          lines.push("PTP(PickPoint,100,-1,0)");
-          lines.push("SetAuxDO(4,1,0,0)");
-          lines.push("PTP(PickSafe,100,-1,0)");
-          lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpTransicionZ},0,0,${rz})`);
-          lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpWaitZ},0,0,${rz})`);
-          lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpLeftZ},0,0,${rz})`);
-          lines.push("SetAuxDO(4,0,0,0)");
-          lines.push(`PTP(${ptpRef},100,-1,1,${resultadoX},${resultadoY},${ptpLeftSafeZ},0,0,${rz})`);
-          lines.push("");
-        });
-
-        return lines.join("\n");
-      }
-
-function generateLuaAllFloors({ paintAreas, floorDefs }) {
-  const onlyBoxes = (paintAreas ?? []).filter((a) => a.source === "single");
-
-  const floorsInUse = Array.from(
-    new Set(onlyBoxes.map((a) => Number(a.floor ?? 1)))
-  ).sort((a, b) => a - b);
-
-  const allSections = floorsInUse.map((floorNumber) => {
-    const floorDef = (floorDefs ?? []).find(
-      (f) => Number(f.floor) === Number(floorNumber)
-    );
-
-    const zBaseFromFloor =
-      Number(floorDef?.zBase) || (-900 + (Math.max(1, Number(floorNumber)) - 1) * 300);
-
-    const boxes = sortBoxesForLua(
-      onlyBoxes
-        .filter((a) => Number(a.floor ?? 1) === Number(floorNumber))
-        .map((a) => {
-          const poly = a.points ?? [];
-          const center = findInteriorPoint(poly);
-
-          const xs = poly.map((p) => p.x);
-          const ys = poly.map((p) => p.y);
-
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minY = Math.min(...ys);
-          const maxY = Math.max(...ys);
-
-          return {
-            id: a.id,
-            label: a.label,
-            x: Math.round(center.x),
-            y: Math.round(center.y),
-            w: Math.round(maxX - minX),
-            h: Math.round(maxY - minY),
-            floor: floorNumber,
-            rotationDeg: a.rotationDeg ?? 0,
-            zBase: zBaseFromFloor,
-          };
-        })
-    );
-
-    return generateLuaFloor({
-      boxes,
-      floorNumber,
-    });
-  });
-
-  return allSections.join("\n\n");
-}
-
-function getAreaCenter(area) {
-  const poly = area?.points ?? [];
-  return findInteriorPoint(poly);
-}
 
 export default function CartesianPlayground() {
 
 
-function getAreaCenter(area) {
-  const pts = area?.points ?? [];
-  if (!pts.length) return { x: 0, y: 0 };
 
-  const xs = pts.map((p) => Number(p.x || 0));
-  const ys = pts.map((p) => Number(p.y || 0));
 
-  return {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
-  };
+
+function exportFairinoLuaFile() {
+  if (hasInvalidFairinoBoxes) {
+    alert("Hay cajas fuera de una zona válida. Corrige eso antes de exportar LUA.");
+    return;
+  }
+
+  const result = buildFairinoLuaFile({
+    paintAreas,
+    floorDefs,
+  });
+
+  downloadTextFile(result.filename, result.content);
 }
+  
+function exportProjectToJson() {
+  const projectData = exportProjectData({
+    paintAreas,
+    floorDefs,
+    areaSummaryPointMm,
+  });
 
-function getAreaBBoxSize(area) {
-  const pts = area?.points ?? [];
-  if (!pts.length) return { w: 300, h: 400 };
-
-  const xs = pts.map((p) => Number(p.x || 0));
-  const ys = pts.map((p) => Number(p.y || 0));
-
-  return {
-    w: Math.max(1, Math.max(...xs) - Math.min(...xs)),
-    h: Math.max(1, Math.max(...ys) - Math.min(...ys)),
-  };
+  downloadJsonFile("proyecto_robot.json", projectData);
 }
+  
+function exportFairinoProjectJson() {
+  const fairinoProject = buildFairinoProject({
+    paintAreas,
+    floorDefs,
+  });
 
-function getRotationDeg(area) {
-  const raw = Number(
-    area?.rotationDeg ??
-    area?.rot ??
-    area?.rotation ??
-    area?.rz ??
-    0
-  );
-
-  const normalized = ((raw % 360) + 360) % 360;
-
-  if (normalized === 270) return -90;
-  if (normalized === 90) return 90;
-  if (normalized === 180) return 0;
-  return 0;
+  downloadJsonFile("fairino_project.json", fairinoProject);
 }
 
 function normalizePaintAreasFor3D(paintAreas = []) {
@@ -939,6 +566,18 @@ const [spacingError, setSpacingError] = useState("");
   );
   const [paintAreas, setPaintAreas] = useState(() => []);
   const [paintAreasError, setPaintAreasError] = useState("");
+
+
+  const fairinoPreview = useMemo(() => {
+    return buildFairinoProject({
+      paintAreas,
+      floorDefs,
+    });
+  }, [paintAreas, floorDefs]);
+
+  const hasInvalidFairinoBoxes = useMemo(() => {
+    return (fairinoPreview?.boxes ?? []).some((b) => b.isValid === false);
+  }, [fairinoPreview]);
 
   useEffect(() => {
     const nextFloor = getNextFloorNumber(floorDefs, paintAreas);
@@ -1317,148 +956,7 @@ useEffect(() => {
   }
 
 
-function exportProjectToJson() {
-  const singleAreas = (paintAreas ?? [])
-    .filter((a) => a.source === "single")
-    .map((a) => {
-      const center = areaSummaryPointMm(a);
 
-      const xs = (a.points ?? []).map((p) => p.x);
-      const ys = (a.points ?? []).map((p) => p.y);
-
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-
-      return {
-        id: a.id,
-        label: a.label,
-        x: center.x,
-        y: center.y,
-        floor: a.floor ?? 1,
-        rotationDeg: a.rotationDeg ?? 0,
-        w: Math.round(maxX - minX),
-        h: Math.round(maxY - minY),
-      };
-    });
-
-  const referenceAreas = (paintAreas ?? [])
-    .filter((a) => a.source !== "single")
-    .map((a) => ({
-      id: a.id,
-      label: a.label,
-      source: a.source ?? "paint",
-      points: (a.points ?? []).map((p) => ({
-        x: Number(p.x),
-        y: Number(p.y),
-      })),
-    }));
-
-  const projectData = {
-    floors: floorDefs ?? [],
-    areas: singleAreas,
-    referenceAreas,
-  };
-
-  downloadJsonFile("proyecto_robot.json", projectData);
-}
-
-
-
-
-  function importProjectFromFile(file) {
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = (evt) => {
-      try {
-        const rawText = String(evt.target?.result ?? "");
-        const data = JSON.parse(rawText);
-
-        const importedFloors = Array.isArray(data?.floors)
-          ? data.floors
-          : Array.isArray(data?.grupo2?.pisos)
-            ? data.grupo2.pisos
-            : [];
-
-        const importedAreas = Array.isArray(data?.areas)
-          ? data.areas
-          : Array.isArray(data?.grupo2?.cajas)
-            ? data.grupo2.cajas
-            : [];
-
-        const importedReferenceAreas = Array.isArray(data?.referenceAreas)
-          ? data.referenceAreas
-          : [];
-
-        const rebuiltSingleAreas = importedAreas.map((a, idx) => {
-          const x = Number(a.x ?? 0);
-          const y = Number(a.y ?? 0);
-          const w = Math.max(1, Number(a.w ?? 300));
-          const h = Math.max(1, Number(a.h ?? 400));
-          const rotationDeg = normalizeRotationDeg(a.rotationDeg ?? 0);
-
-          let pts = rectAreaFromCenter(x, y, w, h);
-
-          if (rotationDeg !== 0) {
-            pts = rotatePolygon(pts, rotationDeg);
-          }
-
-          pts = pts.map((p) => ({
-            x: clamp(p.x, limits.minX, limits.maxX),
-            y: clamp(p.y, limits.minY, limits.maxY),
-          }));
-
-          return {
-            id:
-              a.id ||
-              globalThis.crypto?.randomUUID?.() ||
-              `imported-single-${idx}-${Date.now()}`,
-            label: truncateLabel5(a.label) || `B${idx + 1}`,
-            points: pts,
-            source: "single",
-            floor: Number(a.floor ?? 1),
-            rotationDeg,
-          };
-        });
-
-        const rebuiltReferenceAreas = importedReferenceAreas.map((a, idx) => ({
-          id:
-            a.id ||
-            globalThis.crypto?.randomUUID?.() ||
-            `imported-ref-${idx}-${Date.now()}`,
-          label: truncateLabel5(a.label) || `AREA${idx + 1}`,
-          source: a.source ?? "paint",
-          points: (a.points ?? []).map((p) => ({
-            x: clamp(Number(p.x ?? 0), limits.minX, limits.maxX),
-            y: clamp(Number(p.y ?? 0), limits.minY, limits.maxY),
-          })),
-        }));
-
-        const rebuiltAreas = [...rebuiltReferenceAreas, ...rebuiltSingleAreas];
-
-        setFloorDefs(importedFloors);
-        setPaintAreas(rebuiltAreas);
-        setSelectedAreaId("");
-        setNewLabel(getNextBlueLabel(rebuiltAreas));
-        setAddOneError("");
-        setPaintAreasError("");
-
-        // opcional: reconstruir el textarea del panel Robot y Pallets
-        const referenceText = rebuiltReferenceAreas
-          .map((a) => formatAreaCSVLine(a.label, a.points))
-          .join("\n");
-        setPaintAreasText(referenceText);
-      } catch (err) {
-        console.error("Error importing project:", err);
-        alert("Error al cargar el archivo del proyecto.");
-      }
-    };
-
-    reader.readAsText(file);
-  }
 
   function getFloorColor(floor) {
     return getAutoFloorColor(floor);
@@ -2275,7 +1773,15 @@ rows.forEach((row, rowIndex) => {
         label: truncateLabel5(area.label) || "AREA",
         source: area.source ?? "csv",
         floor: area.floor ?? null,
-        color: getFloorColor(area.floor ?? 1),
+        color: (() => {
+          const fairinoBox = fairinoPreview?.boxes?.find((b) => b.id === area.id);
+
+          if (fairinoBox && fairinoBox.isValid === false) {
+            return "#ef4444";
+          }
+
+          return getFloorColor(area.floor ?? 1);
+        })(),
         pointsAttr,
         labelCenterPx,
         labelTopRightPx,
@@ -3145,7 +2651,6 @@ const blueAreasList = useMemo(() => {
                 padding: "0 10px",
                 fontSize: 12,
                 fontWeight: 700,
-                borderRadius: 6,
                 cursor: "pointer",
               }}
             >
@@ -3532,8 +3037,23 @@ const blueAreasList = useMemo(() => {
                         : "#9ca3af"
                     }
                     fillOpacity={a.source === "single" ? 0.75 : 0.85}
-                    stroke={a.id === selectedAreaId ? selectedStrokeColor : strokeColor}
-                    strokeWidth="2"
+                    stroke={
+                      (() => {
+                        const fairinoBox = fairinoPreview?.boxes?.find((b) => b.id === a.id);
+
+                        if (fairinoBox?.isValid === false) {
+                          return "#b91c1c";
+                        }
+
+                        return a.id === selectedAreaId ? selectedStrokeColor : strokeColor;
+                      })()
+                    }
+                    strokeWidth={
+                      (() => {
+                        const fairinoBox = fairinoPreview?.boxes?.find((b) => b.id === a.id);
+                        return fairinoBox?.isValid === false ? 3 : 2;
+                      })()
+                    }
                     style={{
                       cursor: areaDragRef.current.active ? "grabbing" : "grab",
                     }}
@@ -4266,6 +3786,22 @@ const blueAreasList = useMemo(() => {
               </button>
 
               <button
+                onClick={exportFairinoProjectJson}
+                style={{
+                  marginTop: 6,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#059669",
+                  color: "#fff",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Exportar FAIRINO (.json)
+              </button>
+
+              <button
                 onClick={() => importProjectInputRef.current?.click()}
                 style={{
                   padding: "8px 10px",
@@ -4399,6 +3935,24 @@ const blueAreasList = useMemo(() => {
 
 
 
+<button
+  onClick={exportFairinoLuaFile} disabled={hasInvalidFairinoBoxes}
+  style={{
+    marginTop: 6,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "none",
+    background: hasInvalidFairinoBoxes ? "#9ca3af" : "#7c3aed",
+    color: "#fff",
+    fontWeight: 700,
+    cursor: hasInvalidFairinoBoxes ? "not-allowed" : "pointer",
+    opacity: hasInvalidFairinoBoxes ? 0.7 : 1,
+  }}
+>
+  Exportar LUA FAIRINO (.lua)
+</button>
+
+
         <div style={{ marginTop: 10 }}>
           <RobotScene3D
             paintAreas={normalizePaintAreasFor3D(paintAreas)}
@@ -4417,11 +3971,55 @@ const blueAreasList = useMemo(() => {
 
 
 
+{/** FairinoPreview */}
+<div
+  style={{
+    marginTop: 8,
+    padding: 8,
+    border: "1px solid #d1d5db",
+    borderRadius: 8,
+    background: "#f9fafb",
+    fontSize: 11,
+    maxHeight: 180,
+    overflow: "auto",
+    whiteSpace: "pre-wrap",
+  }}
+>
+  {JSON.stringify(fairinoPreview.motionPlan, null, 2)}
+</div>
+
+{/** FairinoPreview */}
 
 
-
-
-
+  {hasInvalidFairinoBoxes ? (
+    <div
+      style={{
+        marginTop: 8,
+        padding: 8,
+        borderRadius: 8,
+        background: "#fee2e2",
+        color: "#991b1b",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      Hay cajas fuera de una zona válida. No se puede exportar LUA todavía.
+    </div>
+  ) : (
+    <div
+      style={{
+        marginTop: 8,
+        padding: 8,
+        borderRadius: 8,
+        background: "#dcfce7",
+        color: "#166534",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      Todas las cajas están en una zona válida para FAIRINO.
+    </div>
+  )}
 
 
       </div>
